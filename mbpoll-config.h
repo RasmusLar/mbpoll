@@ -27,8 +27,8 @@ extern "C" {
 #define STARTREF_MAX      65536
 #define NUMOFVALUES_MIN   1
 #define NUMOFVALUES_MAX   125
-#define POLLRATE_MIN      100
-#define TIMEOUT_MIN       0.01
+#define POLLRATE_MIN      2
+#define TIMEOUT_MIN       0.001
 #define TIMEOUT_MAX       10.0
 #define TCP_PORT_MIN      1
 #define TCP_PORT_MAX      65535
