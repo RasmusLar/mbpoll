@@ -51,19 +51,19 @@ BinPackParameters:                false
 ExperimentalAutoDetectBinPacking: false
 
 BraceWrapping:
-  AfterCaseLabel:               true
-  AfterClass:                   true
-  AfterControlStatement:        Always
-  AfterEnum:                    true
-  AfterFunction:                true
-  AfterNamespace:               true
-  AfterObjCDeclaration:         true
-  AfterStruct:                  true
-  AfterUnion:                   true
-  AfterExternBlock:             true
-  BeforeCatch:                  true
-  BeforeElse:                   true
-  BeforeLambdaBody:             true
+  AfterCaseLabel:               false
+  AfterClass:                   false
+  AfterControlStatement:        Never
+  AfterEnum:                    false
+  AfterFunction:                false
+  AfterNamespace:               false
+  AfterObjCDeclaration:         false
+  AfterStruct:                  false
+  AfterUnion:                   false
+  AfterExternBlock:             false
+  BeforeCatch:                  false
+  BeforeElse:                   false
+  BeforeLambdaBody:             false
   BeforeWhile:                  false
   IndentBraces:                 false
   SplitEmptyFunction:           false
