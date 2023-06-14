@@ -17,32 +17,30 @@ set(CONFIGURATION_NAME "Release")
 
 # Projects
 
-
 # Top project
 # Define some variables
 set(PROJECT_PATH "${CMAKE_SOURCE_DIR}/")
 
-
-
-#{{{{ User Code 1
+# {{{{ User Code 1
 # Place your code here
 # Modifies binary file paths if codelite is not used.
 include(CheckSymbolExists)
 
 set(CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
 check_symbol_exists(getopt "getopt.h" HAVE_GETOPT)
-if (NOT HAVE_GETOPT)
-  set (GETOPT_SOURCES 3rdparty/getopt/getopt.c)
+
+if(NOT HAVE_GETOPT)
+  set(GETOPT_SOURCES 3rdparty/getopt/getopt.c)
   include_directories(BEFORE 3rdparty/getopt)
-endif (NOT HAVE_GETOPT)
+endif(NOT HAVE_GETOPT)
 
-set (MBPOLL_CUSTOM_RTS_GPIO 1 CACHE BOOL "Enable custom Rts (if libpiduino found, only on ARM)")
+set(MBPOLL_CUSTOM_RTS_GPIO 1 CACHE BOOL "Enable custom Rts (if libpiduino found, only on ARM)")
 
-if (NOT CL_USED)
+if(NOT CL_USED)
   set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
   set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
   set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-endif (NOT CL_USED)
+endif(NOT CL_USED)
 
 # Appends the cmake/modules path to MAKE_MODULE_PATH variable.
 set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake" ${CMAKE_MODULE_PATH})
@@ -53,12 +51,13 @@ if(WIN32)
   # Import libmodbus library from sources located in libmodbus/src
   set(LIBMODBUS_INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/libmodbus/src ${CMAKE_SOURCE_DIR}/libmodbus/src/win32)
   file(GLOB_RECURSE LIBMODBUS_SRCS RELATIVE ${CMAKE_SOURCE_DIR} "libmodbus/src/*.c")
-  # message (STATUS "LIBMODBUS_SRCS ${LIBMODBUS_SRCS}") 
-  find_program (CSCRIPT_PATH NAMES cscript REQUIRED)
-  # message (STATUS "CSCRIPT_PATH ${CSCRIPT_PATH}") 
 
+  # message (STATUS "LIBMODBUS_SRCS ${LIBMODBUS_SRCS}")
+  find_program(CSCRIPT_PATH NAMES cscript REQUIRED)
+
+# message (STATUS "CSCRIPT_PATH ${CSCRIPT_PATH}")
 else(WIN32)
-  pkg_check_modules (LIBMODBUS REQUIRED libmodbus>=3.1.4)
+  pkg_check_modules(LIBMODBUS REQUIRED libmodbus>=3.1.4)
   link_directories(${LIBMODBUS_LIBRARY_DIRS})
   add_definitions(${LIBMODBUS_CFLAGS})
   include_directories(BEFORE ${LIBMODBUS_INCLUDE_DIRS})
@@ -69,9 +68,10 @@ include_directories(BEFORE ${LIBMODBUS_INCLUDE_DIRS})
 
 # search for the piduino package, if found, add the options ...
 find_package(PIDUINO QUIET)
-if (PIDUINO_FOUND)
 
-  message (STATUS "PiDuino ${PIDUINO_VERSION} found !")
+if(PIDUINO_FOUND)
+  message(STATUS "PiDuino ${PIDUINO_VERSION} found !")
+
   if(PIDUINO_WITH_GPIO)
     link_directories(${PIDUINO_LIBRARY_DIRS})
     add_definitions(${PIDUINO_CFLAGS})
@@ -85,9 +85,9 @@ if (PIDUINO_FOUND)
       SETUID)
   endif(PIDUINO_WITH_GPIO)
 
-else (PIDUINO_FOUND)
-  message (STATUS "PiDuino not found, disable MBPOLL_GPIO_RTS !")
-endif (PIDUINO_FOUND)
+else(PIDUINO_FOUND)
+  message(STATUS "PiDuino not found, disable MBPOLL_GPIO_RTS !")
+endif(PIDUINO_FOUND)
 
 if(NOT PIDUINO_WITH_GPIO)
   set(PROGRAM_PERMISSIONS
@@ -96,103 +96,104 @@ if(NOT PIDUINO_WITH_GPIO)
     WORLD_READ WORLD_EXECUTE)
 endif(NOT PIDUINO_WITH_GPIO)
 
-include (GitVersion)
+include(GitVersion)
 GetGitVersion(MBPOLL_VERSION)
 WriteGitVersionFile(${CMAKE_CURRENT_BINARY_DIR}/version-git.h)
 set(MBPOLL_VERSION
   ${MBPOLL_VERSION_MAJOR}.${MBPOLL_VERSION_MINOR}.${MBPOLL_VERSION_PATCH})
-set (PROJECT_DESCRIPTION "ModBus Master Simulator")
-#target_include_directories(mbpoll PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
-#message("MBPOLL_VERSION=${MBPOLL_VERSION}")
-#}}}}
+set(PROJECT_DESCRIPTION "ModBus Master Simulator")
 
+# target_include_directories(mbpoll PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
+# message("MBPOLL_VERSION=${MBPOLL_VERSION}")
+# }}}}
 include_directories(
-    .
-    src
-    ${CMAKE_CURRENT_BINARY_DIR}
-
+  .
+  src
+  ${CMAKE_CURRENT_BINARY_DIR}
 )
 
 if(MSVC)
-add_definitions(-D_CRT_SECURE_NO_WARNINGS)
+  add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 else(MSVC)
-# Compiler options
-add_definitions(-O2)
-add_definitions(-Wall)
-add_definitions(-Wno-unused-parameter)
-add_definitions(-Wno-unused-function)
-add_definitions(-Wno-unused-const-variable)
-set_source_files_properties(
-    ${C_SRCS} PROPERTIES COMPILE_FLAGS 
+  # Compiler options
+  add_definitions(-O2)
+  add_definitions(-Wall)
+  add_definitions(-Wno-unused-parameter)
+  add_definitions(-Wno-unused-function)
+  add_definitions(-Wno-unused-const-variable)
+  set_source_files_properties(
+    ${C_SRCS} PROPERTIES COMPILE_FLAGS
     " -O2 -Wall -Wno-unused-parameter -Wno-unused-function -Wno-unused-const-variable")
 endif(MSVC)
-add_definitions(
-    -DNDEBUG
-)
 
+add_definitions(
+  -DNDEBUG
+)
+find_package(Threads REQUIRED)
+
+if(THREADS_HAVE_PTHREAD_ARG)
+  target_compile_options(mbpoll PUBLIC "-pthread")
+endif()
+
+if(CMAKE_THREAD_LIBS_INIT)
+  target_link_libraries(mbpoll "${CMAKE_THREAD_LIBS_INIT}")
+endif()
 
 # Linker options
-
-
 if(WIN32)
-    # Resource options
-    set(RC_SRCS 
-        ${CMAKE_SOURCE_DIR}/libmodbus/src/win32/modbus.rc
-    )
-    list(APPEND LINK_OPTIONS wsock32 ws2_32)
+  # Resource options
+  set(RC_SRCS
+    ${CMAKE_SOURCE_DIR}/libmodbus/src/win32/modbus.rc
+  )
+  list(APPEND LINK_OPTIONS wsock32 ws2_32)
 endif(WIN32)
 
 # Library path
 set(CMAKE_LDFLAGS "${CMAKE_LDFLAGS} -L. ")
 
 # Define the C sources
-set ( C_SRCS
-    ${CMAKE_SOURCE_DIR}/src/mbpoll.c
-    ${CMAKE_SOURCE_DIR}/src/custom-rts.c
-    ${CMAKE_SOURCE_DIR}/src/serial.c
-    ${LIBMODBUS_SRCS}
-    ${GETOPT_SOURCES}
+set(C_SRCS
+  ${CMAKE_SOURCE_DIR}/src/mbpoll.c
+  ${CMAKE_SOURCE_DIR}/src/custom-rts.c
+  ${CMAKE_SOURCE_DIR}/src/serial.c
+  ${LIBMODBUS_SRCS}
+  ${GETOPT_SOURCES}
 )
 
 if(WIN32)
-    enable_language(RC)
-    set(CMAKE_RC_COMPILE_OBJECT
-        "<CMAKE_RC_COMPILER> ${RC_OPTIONS} -O coff -i <SOURCE> -o <OBJECT>")
+  enable_language(RC)
+  set(CMAKE_RC_COMPILE_OBJECT
+    "<CMAKE_RC_COMPILER> ${RC_OPTIONS} -O coff -i <SOURCE> -o <OBJECT>")
 endif(WIN32)
 
-
-
-#{{{{ User Code 2
+# {{{{ User Code 2
 # Place your code here
 # uninstall target
 configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/cmake_uninstall.cmake.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake"
-    IMMEDIATE @ONLY)
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake_uninstall.cmake.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake"
+  IMMEDIATE @ONLY)
 add_custom_target(uninstall
-    COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake)
+  COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/cmake_uninstall.cmake)
 
-#}}}}
-
+# }}}}
 add_executable(mbpoll ${RC_SRCS} ${CXX_SRCS} ${C_SRCS})
 target_link_libraries(mbpoll ${LINK_OPTIONS})
 
-
-
-#{{{{ User Code 3
+# {{{{ User Code 3
 # Place your code here
 install(TARGETS mbpoll RUNTIME DESTINATION bin
-        PERMISSIONS ${PROGRAM_PERMISSIONS})
+  PERMISSIONS ${PROGRAM_PERMISSIONS})
 
 if(WIN32)
   add_custom_command(
     TARGET mbpoll PRE_BUILD
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/libmodbus/src/win32
     COMMAND ${CSCRIPT_PATH} ${CMAKE_SOURCE_DIR}/libmodbus/src/win32/configure.js
-    VERBATIM) 
+    VERBATIM)
 endif(WIN32)
 
-### Debian Package generation
+# ## Debian Package generation
 set(CPACK_PACKAGE_NAME ${PROJECT_NAME})
 set(CPACK_PACKAGE_VERSION "${MBPOLL_VERSION_MAJOR}.${MBPOLL_VERSION_MINOR}.${MBPOLL_VERSION_PATCH}")
 set(CPACK_PACKAGE_VERSION_MAJOR "${MBPOLL_VERSION_MAJOR}")
@@ -205,37 +206,38 @@ set(CPACK_RESOURCE_FILE_LICENSE "${PROJECT_SOURCE_DIR}/COPYING")
 
 set(CPACK_GENERATOR "DEB")
 
-if (CPACK_GENERATOR STREQUAL "DEB")
-
+if(CPACK_GENERATOR STREQUAL "DEB")
   set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://github.com/epsilonrt/mbpoll")
-  
+
   find_program(dpkg_query NAMES dpkg-query)
   find_program(dpkg_cmd NAMES dpkg)
 
-  if (NOT CPACK_DEBIAN_PACKAGE_ARCHITECTURE)
-    if (dpkg_cmd)
+  if(NOT CPACK_DEBIAN_PACKAGE_ARCHITECTURE)
+    if(dpkg_cmd)
       execute_process(COMMAND ${dpkg_cmd} --print-architecture RESULT_VARIABLE ret OUTPUT_VARIABLE arch OUTPUT_STRIP_TRAILING_WHITESPACE)
-      if (ret EQUAL 0)
+
+      if(ret EQUAL 0)
         set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "${arch}")
-      else (ret EQUAL 0)
+      else(ret EQUAL 0)
         message(WARNING "Unable to get debian architecture !")
-      endif (ret EQUAL 0)
-    endif (dpkg_cmd)
-  endif (NOT CPACK_DEBIAN_PACKAGE_ARCHITECTURE)
+      endif(ret EQUAL 0)
+    endif(dpkg_cmd)
+  endif(NOT CPACK_DEBIAN_PACKAGE_ARCHITECTURE)
 
   message(STATUS "Debian architecture ${CPACK_DEBIAN_PACKAGE_ARCHITECTURE}")
 
   set(CPACK_PACKAGE_FILE_NAME "${PROJECT_NAME}_${CPACK_PACKAGE_VERSION}_${CPACK_DEBIAN_PACKAGE_ARCHITECTURE}")
   message(STATUS "Debian package name is ${CPACK_PACKAGE_FILE_NAME}.deb")
-  
+
   if(PIDUINO_WITH_GPIO)
     set(CPACK_DEBIAN_PACKAGE_DEPENDS "libmodbus5  (>= 3.1.4),libpiduino (>= ${PIDUINO_VERSION})")
   else(PIDUINO_WITH_GPIO)
     set(CPACK_DEBIAN_PACKAGE_DEPENDS "libmodbus5  (>= 3.1.4)")
   endif(PIDUINO_WITH_GPIO)
+
   set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
-endif (CPACK_GENERATOR STREQUAL "DEB")
+endif(CPACK_GENERATOR STREQUAL "DEB")
 
 include(CPack)
-#}}}}
 
+# }}}}

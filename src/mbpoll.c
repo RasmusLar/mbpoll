@@ -33,6 +33,7 @@
 #if defined(__unix__) || (defined(__APPLE__) && defined(__MACH__))
 #include <sys/time.h>
 
+#include <pthread.h>
 #include <unistd.h>
 #endif
 #ifdef _WIN32
@@ -78,72 +79,8 @@
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 #endif
 
-/* types ==================================================================== */
-typedef enum {
-    eModeRtu,
-    eModeTcp,
-    eModeUnknown = -1,
-} eModes;
-
-typedef enum {
-    eFuncCoil          = 0,
-    eFuncDiscreteInput = 1,
-    eFuncInputReg      = 3,
-    eFuncHoldingReg    = 4,
-    eFuncUnknown       = -1,
-} eFunctions;
-
-typedef enum {
-    eFormatDec,
-    eFormatInt16,
-    eFormatHex,
-    eFormatString,
-    eFormatInt,
-    eFormatFloat,
-    eFormatBin,
-    eFormatUnknown = -1,
-} eFormats;
-
-/* macros =================================================================== */
-#define SIZEOF_ILIST(list) (sizeof(list) / sizeof(int))
-/*
- * Le pointeur sur les données est de type void *, les macros ci-dessous
- * permettent de caster l'accès aux données en fonction de leur format
- */
-#define DUINT8(p, i)  ((uint8_t*)(p))[i]
-#define DUINT16(p, i) ((uint16_t*)(p))[i]
-#define DINT32(p, i)  ((int32_t*)(p))[i]
-#define DFLOAT(p, i)  ((float*)(p))[i]
-
 /* constants ================================================================ */
-static char const* sModeList[]   = {"RTU", "TCP"};
-static int const iModeList[]     = {eModeRtu, eModeTcp};
-static int const iParityList[]   = {SERIAL_PARITY_EVEN, SERIAL_PARITY_ODD, SERIAL_PARITY_NONE};
-static int const iDatabitsList[] = {SERIAL_DATABIT_8, SERIAL_DATABIT_7};
-static int const iStopbitsList[] = {SERIAL_STOPBIT_ONE, SERIAL_STOPBIT_TWO};
-
-static char const* sFunctionList[]
-    = {"discrete output (coil)", "discrete input", "input register", "output (holding) register"};
-static int const iFunctionList[] = {eFuncCoil, eFuncDiscreteInput, eFuncInputReg, eFuncHoldingReg};
-
-static char const sModeStr[]         = "mode";
-static char const sSlaveAddrStr[]    = "slave address";
-static char const sRtuParityStr[]    = "rtu parity";
-static char const sRtuStopbitsStr[]  = "rtu stop bits";
-static char const sRtuDatabitsStr[]  = "rtu data bits";
-static char const sRtuBaudrateStr[]  = "rtu baudrate";
-static char const sTcpPortStr[]      = "tcp port";
-static char const sTimeoutStr[]      = "timeout";
-static char const sPollRateStr[]     = "poll rate";
-static char const sFunctionStr[]     = "function";
-static char const sFormatStr[]       = "format";
-static char const sNumOfValuesStr[]  = "number of values";
-static char const sStartRefStr[]     = "start reference";
-static char const sDataStr[]         = "data";
-static char const sUnknownStr[]      = "unknown";
 static char const sIntStr[]          = "32-bit integer";
-static char const sFloatStr[]        = "32-bit float";
-static char const sWordStr[]         = "16-bit register";
 static char const sLittleEndianStr[] = "(little endian)";
 static char const sBigEndianStr[]    = "(big endian)";
 static char* progname;
@@ -153,47 +90,40 @@ static char const sRtsPinStr[] = "RTS pin";
 #endif
 
 /* structures =============================================================== */
-typedef struct xChipIoContext xChipIoContext;
+typedef struct xThreadContext {
+    modbus_t* readBus;
+    modbus_t* writeBus;
+    int readAddress;
+    int writeAddress;
+    int numberOfRegisters;
+    uint16_t* values;
+    pthread_mutex_t* readLock;
+    pthread_mutex_t* writeLock;
+    pthread_mutex_t* printLock;
+} xThreadContext;
 
 typedef struct xMbPollContext {
-    eModes eMode;
-    eFunctions eFunction;
-    eFormats eFormat;
-    int* piSlaveAddr;
-    int iSlaveCount;
-    int* piStartRef;
-    int iStartCount;
-    int iCount;
-    char* sTcpPort;
-    char* sDevice;
-    xSerialIos xRtu;
-    int iRtuBaudrate;
-    eSerialDataBits eRtuDatabits;
-    eSerialStopBits eRtuStopbits;
-    eSerialParity eRtuParity;
-    int iRtuMode;
-    bool bIsDefaultMode;
-    int iPduOffset;
-    bool bWriteSingleAsMany;
-    bool bIsChipIo;
+    uint16_t* piSlaveAddr;
+    uint16_t iCount;
+    char const* sTcpPort;
+    char const* sDevice;
     bool bIsBigEndian;
     modbus_t* xBus;
     modbus_t* forwardBus;
     char const* forwardDevice;
-    void* pvData;
-    int iTxCount;
-    int iRxCount;
-    int iErrorCount;
-
-    xChipIoContext* xChip; // TODO: séparer la partie chipio
+    uint16_t pvData1[12];
+    uint16_t pvData2[8];
+    uint64_t iTxCount;
+    uint64_t iRxCount;
+    uint64_t iErrorCount;
 
     // Paramètres
     double dTimeout;
     int iPollRate;
     bool bIsVerbose;
-    bool bIsReportSlaveID;
-    bool bIsQuiet;
     bool bIsPolling;
+    bool threadLoop;
+    uint8_t threadInstances;
 #ifdef MBPOLL_GPIO_RTS
     int iRtsPin;
 #endif
@@ -203,47 +133,28 @@ typedef struct xMbPollContext {
 /* private variables ======================================================== */
 
 static xMbPollContext ctx = {
-    .eMode = DEFAULT_MODE,
-    .eFunction = DEFAULT_FUNCTION,
-    .eFormat = eFormatDec,
-    .piSlaveAddr = NULL,
-    .iSlaveCount = -1,
-    .piStartRef = NULL,
-    .iStartCount = -1,
-    .iCount = DEFAULT_NUMOFVALUES,
-    .sTcpPort = DEFAULT_TCP_PORT,
-    .sDevice = NULL,
-    .xRtu =
-        {
-            .baud = DEFAULT_RTU_BAUDRATE,
-            .dbits = DEFAULT_RTU_DATABITS,
-            .sbits = DEFAULT_RTU_STOPBITS,
-            .parity = DEFAULT_RTU_PARITY,
-            .flow = SERIAL_FLOW_NONE,
-        },
-    .iRtuMode = MODBUS_RTU_RTS_NONE,
-    .bIsDefaultMode = true,
-    .iPduOffset = 1,
-    .bWriteSingleAsMany = false,
-    .bIsChipIo = false,
+    .iCount       = DEFAULT_NUMOFVALUES,
+    .sTcpPort     = DEFAULT_TCP_PORT,
+    .sDevice      = NULL,
     .bIsBigEndian = false,
 #ifdef MBPOLL_GPIO_RTS
     .iRtsPin = -1,
 #endif
 
     // Variables de travail
-    .xBus = NULL,
-    .forwardBus = NULL,
+    .xBus          = NULL,
+    .forwardBus    = NULL,
     .forwardDevice = NULL,
-    .pvData = NULL,
     // Paramètres
-    .dTimeout = DEFAULT_TIMEOUT,
-    .iPollRate = DEFAULT_POLLRATE,
-    .bIsVerbose = false,
-    .bIsReportSlaveID = false,
-    .bIsQuiet = false,
-    .bIsPolling = true,
+    .dTimeout        = DEFAULT_TIMEOUT,
+    .iPollRate       = DEFAULT_POLLRATE,
+    .bIsVerbose      = false,
+    .bIsPolling      = true,
+    .threadLoop      = true,
+    .threadInstances = 0,
 };
+static xThreadContext threadContext;
+static xThreadContext mainContext;
 
 #ifdef USE_CHIPIO
 // -----------------------------------------------------------------------------
@@ -269,32 +180,13 @@ static char const sChipIoIrqPinStr[]    = "chipio irq pin";
 /* private functions ======================================================== */
 int printfInternal(char const* format, ...);
 int putcharInternal(int c);
-void vAllocate(xMbPollContext* ctx);
-void vPrintReadValues(int iAddr, int iCount, xMbPollContext* ctx);
 void vPrintConfig(xMbPollContext const* ctx);
 void vPrintCommunicationSetup(xMbPollContext const* ctx);
-void vReportSlaveID(xMbPollContext const* ctx);
-void vHello(void);
-void vVersion(void);
-void vWarranty(void);
-void vUsage(FILE* stream, int exit_msg);
 void vFailureExit(bool bHelp, char const* format, ...);
 #define vSyntaxErrorExit(fmt, ...) vFailureExit(true, fmt, ##__VA_ARGS__)
 #define vIoErrorExit(fmt, ...)     vFailureExit(false, fmt, ##__VA_ARGS__)
-void vCheckEnum(char const* sName, int iElmt, int const* iList, int iSize);
-void vCheckIntRange(char const* sName, int i, int min, int max);
-void vCheckDoubleRange(char const* sName, double d, double min, double max);
-int iGetInt(char const* sName, char const* sNum, int iBase);
-int* iGetIntList(char const* sName, char const* sList, int* iLen);
 void vPrintIntList(int* iList, int iLen);
-double dGetDouble(char const* sName, char const* sNum);
-int iGetEnum(char const* sName, char* sElmt, char const** psStrList, int const* iList, int iSize);
-char const* sEnumToStr(int iElmt, int const* iList, char const** psStrList, int iSize);
-char const* sFunctionToStr(eFunctions eFunction);
-char const* sModeToStr(eModes eMode);
 void vSigIntHandler(int sig);
-float fSwapFloat(float f);
-int32_t lSwapLong(int32_t l);
 void mb_delay(unsigned long d);
 
 #if defined(__unix__) || (defined(__APPLE__) && defined(__MACH__))
@@ -363,19 +255,94 @@ static char* index(char const* s, int c) {
 
 /* main ===================================================================== */
 
-static char device1[] = "192.168.10.4";
-static char device2[] = "192.168.10.11";
+#define DEVICE_1 "localhost"; //"192.168.0.11";
+#define DEVICE_2 "192.168.10.4";
+
+// static struct timespec yieldTime = {
+//     .tv_nsec = 0x1,
+//     .tv_sec  = 0,
+// };
+
+// void yield() { nanosleep(&yieldTime, NULL); }
+
+void takeLock(pthread_mutex_t* lock) { pthread_mutex_lock(lock); }
+
+void releaseLock(pthread_mutex_t* lock) { pthread_mutex_unlock(lock); }
+
+void checkForErrors(
+    int const* iRet, int const* supposedRet, char const* writeOrRead, pthread_mutex_t* lock) {
+    takeLock(lock);
+    if (*iRet == *supposedRet) {
+        printfInternal("%s %d references.\n", writeOrRead, *iRet);
+    } else {
+        ctx.iErrorCount++;
+        fprintf(
+            stderr,
+            "%s %d values failed: %s, returned %d\n",
+            writeOrRead,
+            *supposedRet,
+            modbus_strerror(errno),
+            *iRet);
+    }
+    releaseLock(lock);
+}
+
+void* forwardThread(void* vThreadContext) {
+    xThreadContext* threadContext = vThreadContext;
+    ctx.threadInstances++;
+    int result = 0;
+    do {
+        takeLock(threadContext->readLock);
+        ctx.iRxCount++;
+        result = modbus_read_registers(
+            threadContext->readBus,
+            threadContext->readAddress,
+            threadContext->numberOfRegisters,
+            threadContext->values);
+        releaseLock(threadContext->readLock);
+        checkForErrors(
+            &result, &(threadContext->numberOfRegisters), "Read", threadContext->printLock);
+        if (result == threadContext->numberOfRegisters && ctx.threadLoop) {
+            takeLock(threadContext->writeLock);
+            ctx.iTxCount++;
+            // if (threadContext->numberOfRegisters == 1) {
+            //     result = modbus_write_register(
+            //         threadContext->bus, threadContext->address, threadContext->values);
+            // }
+            result = modbus_write_registers(
+                threadContext->writeBus,
+                threadContext->writeAddress,
+                threadContext->numberOfRegisters,
+                threadContext->values);
+            releaseLock(threadContext->writeLock);
+            checkForErrors(
+                &result, &(threadContext->numberOfRegisters), "Write", threadContext->printLock);
+        }
+        if (result != threadContext->numberOfRegisters) {
+            // Auto balancing when errors, take all locks to stop all threads, sleep and restart.
+            takeLock(threadContext->readLock);
+            takeLock(threadContext->writeLock);
+            takeLock(threadContext->printLock);
+            usleep(0x400);
+            releaseLock(threadContext->readLock);
+            releaseLock(threadContext->writeLock);
+            releaseLock(threadContext->printLock);
+        }
+    } while (ctx.threadLoop);
+    // fprintf(stderr, "Last usleep: %lu, last yield: %ld\n", microSleep, yieldTime.tv_nsec);
+    ctx.threadInstances--;
+    return NULL;
+}
 
 int main(int argc, char** argv) {
-    int iRet = 0;
     progname = argv[0];
     // Connection au bus
 
-    ctx.sDevice = device1;
-    ctx.xBus    = modbus_new_tcp_pi(ctx.sDevice, DEFAULT_TCP_PORT);
+    ctx.sDevice = DEVICE_1;
+    ctx.xBus    = modbus_new_tcp_pi(ctx.sDevice, ctx.sTcpPort);
     if (modbus_connect(ctx.xBus) == -1) {
         modbus_free(ctx.xBus);
-        vIoErrorExit("Connection failed to driver: %s", modbus_strerror(errno));
+        vIoErrorExit("Connection failed to UR at '%s': '%s'", ctx.sDevice, modbus_strerror(errno));
     }
 
     /*
@@ -387,17 +354,17 @@ int main(int argc, char** argv) {
     uint32_t sec, usec;
     sec  = (uint32_t)ctx.dTimeout;
     usec = (uint32_t)((ctx.dTimeout - sec) * 1E6);
-    modbus_set_response_timeout(ctx.xBus, sec, usec);
 
     // vSigIntHandler() intercepte le CTRL+C
     signal(SIGINT, vSigIntHandler);
-    ctx.forwardDevice = device2;
-    ctx.forwardBus    = modbus_new_tcp_pi(ctx.forwardDevice, DEFAULT_TCP_PORT);
+    ctx.forwardDevice = DEVICE_2;
+    ctx.forwardBus    = modbus_new_tcp_pi(ctx.forwardDevice, ctx.sTcpPort);
 
     if (modbus_connect(ctx.forwardBus) == -1) {
         modbus_free(ctx.xBus);
         modbus_free(ctx.forwardBus);
-        vIoErrorExit("Connection failed to UR: %s", modbus_strerror(errno));
+        vIoErrorExit(
+            "Connection failed to SEW at '%s': '%s'", ctx.forwardDevice, modbus_strerror(errno));
     }
 
     modbus_set_response_timeout(ctx.xBus, sec, usec);
@@ -405,163 +372,51 @@ int main(int argc, char** argv) {
     modbus_set_slave(ctx.xBus, 0);
     modbus_set_slave(ctx.forwardBus, 0);
 
-    ctx.pvData = calloc(1, 6 * 4);
     vPrintConfig(&ctx);
-    do {
-        // libmodbus utilise les adresses PDU !
+    pthread_t threadId1;
+    pthread_t threadId2;
+    pthread_mutex_t xBusLock       = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_t forwardBusLock = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_t printLock      = PTHREAD_MUTEX_INITIALIZER;
 
-        ctx.iTxCount++;
+    threadContext.readBus           = ctx.xBus;
+    threadContext.readLock          = &xBusLock;
+    threadContext.readAddress       = 192;
+    threadContext.writeBus          = ctx.forwardBus;
+    threadContext.writeLock         = &forwardBusLock;
+    threadContext.writeAddress      = 4;
+    threadContext.numberOfRegisters = 6;
+    threadContext.values            = ctx.pvData1;
+    threadContext.printLock         = &printLock;
 
-        // Ecriture ------------------------------------------------------------
-        iRet = modbus_read_registers(ctx.forwardBus, 128, 4, ctx.pvData);
-        iRet = modbus_write_registers(ctx.xBus, 4, iRet, ctx.pvData);
+    mainContext.readBus           = ctx.forwardBus;
+    mainContext.readLock          = &forwardBusLock;
+    mainContext.readAddress       = 4;
+    mainContext.writeBus          = ctx.xBus;
+    mainContext.writeLock         = &xBusLock;
+    mainContext.writeAddress      = 200;
+    mainContext.numberOfRegisters = 4;
+    mainContext.values            = ctx.pvData2;
+    mainContext.printLock         = &printLock;
 
-        if (iRet == 4) {
-            ctx.iRxCount++;
-            printfInternal("Written %d references.\n", ctx.iCount);
-        } else {
-            ctx.iErrorCount++;
-            fprintf(
-                stderr,
-                "Write %s failed: %s\n",
-                sFunctionToStr(ctx.eFunction),
-                modbus_strerror(errno));
-        }
-
-        ctx.iTxCount++;
-
-        printfInternal("-- Polling slave %d, forwarding to %s...", 0, ctx.forwardDevice);
-        if (ctx.bIsPolling) {
-            printfInternal(" Ctrl-C to stop)\n");
-        } else {
-            putcharInternal('\n');
-        }
-        // iRet = modbus_read_input_registers(
-        //     ctx.xBus, iStartReg + iNbReg, iNbReg, ctx.pvData);
-        // iRet = modbus_write_registers(ctx.forwardBus, 129 + iNbReg, iRet, ctx.pvData);
-        iRet = modbus_read_registers(ctx.xBus, 4, 6, ctx.pvData);
-        iRet = modbus_write_registers(ctx.forwardBus, 135, iRet, ctx.pvData);
-
-        if (iRet == 6) {
-            ctx.iRxCount++;
-            // vPrintReadValues(4, ctx.iCount, &ctx);
-        } else {
-            ctx.iErrorCount++;
-            fprintf(
-                stderr,
-                "Read %s failed: %s\n",
-                sFunctionToStr(ctx.eFunction),
-                modbus_strerror(errno));
-        }
-    } while (ctx.bIsPolling);
-
+    if (ctx.bIsPolling) {
+        printfInternal(" Ctrl-C to stop)\n");
+    } else {
+        putcharInternal('\n');
+    }
+    pthread_create(&threadId1, NULL, forwardThread, &threadContext);
+    pthread_create(&threadId2, NULL, forwardThread, &mainContext);
+    while (ctx.threadLoop) {
+        // ~6.5 ms
+        usleep(0x10000);
+    }
+    // pthread_join(threadId1, NULL);
+    // pthread_join(threadId2, NULL);
     vSigIntHandler(SIGTERM);
     return 0;
 }
 
 /* private functions ======================================================== */
-
-// -----------------------------------------------------------------------------
-void vPrintReadValues(int iAddr, int iCount, xMbPollContext* ctx) {
-    int i;
-    for (i = 0; i < iCount; i++) {
-        printfInternal("[%d]: \t", iAddr);
-
-        switch (ctx->eFormat) {
-            case eFormatBin:
-                printfInternal("%c", (DUINT8(ctx->pvData, i) != FALSE) ? '1' : '0');
-                iAddr++;
-                break;
-
-            case eFormatDec: {
-                uint16_t v = DUINT16(ctx->pvData, i);
-                if (v & 0x8000) {
-                    printfInternal("%u (%d)", v, (int)(int16_t)v);
-                } else {
-                    printfInternal("%u", v);
-                }
-                iAddr++;
-            } break;
-
-            case eFormatInt16:
-                printfInternal("%d", (int)(int16_t)(DUINT16(ctx->pvData, i)));
-                iAddr++;
-                break;
-
-            case eFormatHex:
-                printfInternal("0x%04X", DUINT16(ctx->pvData, i));
-                iAddr++;
-                break;
-
-            case eFormatString:
-                printfInternal(
-                    "%c%c",
-                    (char)((int)(DUINT16(ctx->pvData, i) / 256)),
-                    (char)(DUINT16(ctx->pvData, i) % 256));
-                iAddr++;
-                break;
-
-            case eFormatInt:
-                printfInternal("%d", lSwapLong(DINT32(ctx->pvData, i)));
-                iAddr += 2;
-                break;
-
-            case eFormatFloat:
-                printfInternal("%g", fSwapFloat(DFLOAT(ctx->pvData, i)));
-                iAddr += 2;
-                break;
-
-            default: // Impossible normalement
-                break;
-        }
-        putcharInternal('\n');
-    }
-}
-
-// -----------------------------------------------------------------------------
-void vReportSlaveID(xMbPollContext const* ctx) {
-    uint8_t ucReport[256];
-
-    modbus_set_slave(ctx->xBus, ctx->piSlaveAddr[0]);
-    // Affichage de la configuration
-    printfInternal("Protocol configuration: Modbus %s\n", sModeList[ctx->eMode]);
-    printfInternal("Slave configuration...: address = %d, report slave id\n", ctx->piSlaveAddr[0]);
-
-    vPrintCommunicationSetup(ctx);
-
-    int iRet = modbus_report_slave_id(ctx->xBus, 256, ucReport);
-
-    if (iRet < 0) {
-        fprintf(stderr, "Report slave ID failed(%d): %s\n", iRet, modbus_strerror(errno));
-    } else {
-        if (iRet > 1) {
-            int iLen = iRet - 2;
-
-            printfInternal(
-                "Length: %d\n"
-                "Id    : 0x%02X\n"
-                "Status: %s\n",
-                iRet,
-                ucReport[0],
-                (ucReport[1]) ? "On" : "Off");
-
-            if (iLen > 0) {
-                int i;
-                printfInternal("Data  : ");
-                for (i = 2; i < (iLen + 2); i++) {
-                    if (isprint(ucReport[i])) {
-                        putcharInternal(ucReport[i]);
-                    } else {
-                        printfInternal("\\%02X", ucReport[i]);
-                    }
-                }
-                putcharInternal('\n');
-            }
-        } else {
-            fprintf(stderr, "no data available\n");
-        }
-    }
-}
 
 // -----------------------------------------------------------------------------
 void vPrintCommunicationSetup(xMbPollContext const* ctx) {
@@ -582,36 +437,9 @@ void vPrintConfig(xMbPollContext const* ctx) {
 
     vPrintCommunicationSetup(ctx);
     printf("Data type.............: ");
-    switch (ctx->eFunction) {
-        case eFuncDiscreteInput: printf("discrete input\n"); break;
+    printf("%s %s", sIntStr, ctx->bIsBigEndian ? sBigEndianStr : sLittleEndianStr);
+    printf(", output (holding) register table\n");
 
-        case eFuncCoil: printf("discrete output (coil)\n"); break;
-
-        case eFuncInputReg:
-            if (ctx->eFormat == eFormatInt) {
-                printf("%s %s", sIntStr, ctx->bIsBigEndian ? sBigEndianStr : sLittleEndianStr);
-            } else if (ctx->eFormat == eFormatFloat) {
-                printf("%s %s", sFloatStr, ctx->bIsBigEndian ? sBigEndianStr : sLittleEndianStr);
-            } else {
-                printf("%s", sWordStr);
-            }
-            printf(", input register table\n");
-            break;
-
-        case eFuncHoldingReg:
-            if (ctx->eFormat == eFormatInt) {
-                printf("%s %s", sIntStr, ctx->bIsBigEndian ? sBigEndianStr : sLittleEndianStr);
-            } else if (ctx->eFormat == eFormatFloat) {
-                printf("%s %s", sFloatStr, ctx->bIsBigEndian ? sBigEndianStr : sLittleEndianStr);
-            } else {
-                printf("%s", sWordStr);
-            }
-            printf(", output (holding) register table\n");
-            break;
-
-        default: // Impossible, la valeur a été vérifiée, évite un warning de gcc
-            break;
-    }
     putcharInternal('\n');
 }
 
@@ -628,48 +456,36 @@ int putcharInternal(int c) {
     return 0;
 }
 
-// -----------------------------------------------------------------------------
-// Allocation de la mémoire pour les données à écrire ou à lire
-void vAllocate(xMbPollContext* ctx) {
-    size_t ulDataSize = ctx->iCount;
-    switch (ctx->eFunction) {
-        case eFuncCoil:
-        case eFuncDiscreteInput:
-            // 1 bit est stocké dans un octet
-            break;
-
-        case eFuncInputReg:
-        case eFuncHoldingReg:
-            if ((ctx->eFormat == eFormatInt) || (ctx->eFormat == eFormatFloat)) {
-                // Registres 32-bits
-                ulDataSize *= 4;
-            } else {
-                // Registres 16-bits
-                ulDataSize *= 2;
-            }
-            break;
-
-        default: // Impossible, la valeur a été vérifiée, évite un warning de gcc
-            break;
+void waitForThread(uint8_t previousThread) {
+    for (size_t i = 0; i < 50 && ctx.threadInstances != 0 && previousThread == ctx.threadInstances;
+         i++) {
+        usleep(100);
     }
-    ctx->pvData = calloc(1, ulDataSize);
-    assert(ctx->pvData);
 }
 
 // -----------------------------------------------------------------------------
 void vSigIntHandler(int sig) {
+    ctx.threadLoop = false;
+    waitForThread(ctx.threadInstances);
+    releaseLock(threadContext.printLock);
+    releaseLock(threadContext.readLock);
+    releaseLock(threadContext.writeLock);
+    waitForThread(ctx.threadInstances);
+
+    if (ctx.threadInstances != 0) {
+        fprintf(stderr, "Threads not closed properly, still %d running\n", ctx.threadInstances);
+    }
     if ((ctx.bIsPolling)) {
         printf(
             "--- %s poll statistics ---\n"
-            "%d frames transmitted, %d received, %d errors, %.1f%% frame loss\n",
+            "%lu frames written, %lu read, %lu errors, %.1Lf%% frame loss\n",
             ctx.sDevice,
             ctx.iTxCount,
             ctx.iRxCount,
             ctx.iErrorCount,
-            (double)(ctx.iTxCount - ctx.iRxCount) * 100.0 / (double)ctx.iTxCount);
+            (long double)(ctx.iErrorCount) * 100.0 / (long double)ctx.iRxCount);
     }
 
-    free(ctx.pvData);
     free(ctx.piSlaveAddr);
     modbus_close(ctx.xBus);
     modbus_free(ctx.xBus);
@@ -702,97 +518,8 @@ void vFailureExit(bool bHelp, char const* format, ...) {
     }
     va_end(va);
     fflush(stderr);
-    free(ctx.pvData);
     free(ctx.piSlaveAddr);
     exit(EXIT_FAILURE);
-}
-
-// -----------------------------------------------------------------------------
-void vVersion(void) {
-    printf("%s\n", VERSION_SHORT);
-    exit(EXIT_SUCCESS);
-}
-
-// -----------------------------------------------------------------------------
-void vWarranty(void) {
-    printf(
-        "Copyright (c) 2015-2023 %s, All rights reserved.\n\n"
-
-        " mbpoll is free software: you can redistribute it and/or modify\n"
-        " it under the terms of the GNU General Public License as published by\n"
-        " the Free Software Foundation, either version 3 of the License, or\n"
-        " (at your option) any later version.\n\n"
-
-        " mbpoll is distributed in the hope that it will be useful,\n"
-        " but WITHOUT ANY WARRANTY; without even the implied warranty of\n"
-        " MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n"
-        " GNU General Public License for more details.\n\n"
-
-        " You should have received a copy of the GNU General Public License\n"
-        " along with mbpoll. If not, see <http://www.gnu.org/licenses/>.\n",
-        AUTHORS);
-    exit(EXIT_SUCCESS);
-}
-
-// -----------------------------------------------------------------------------
-void vCheckEnum(char const* sName, int iElmt, int const* iList, int iSize) {
-    int i;
-    for (i = 0; i < iSize; i++) {
-        if (iElmt == iList[i]) {
-            return;
-        }
-    }
-    vSyntaxErrorExit("Illegal %s: %d", sName, iElmt);
-}
-
-// -----------------------------------------------------------------------------
-void vCheckIntRange(char const* sName, int i, int min, int max) {
-    if ((i < min) || (i > max)) {
-        vSyntaxErrorExit("%s out of range (%d)", sName, i);
-    }
-}
-
-// -----------------------------------------------------------------------------
-void vCheckDoubleRange(char const* sName, double d, double min, double max) {
-    if ((d < min) || (d > max)) {
-        vSyntaxErrorExit("%s out of range (%g)", sName, d);
-    }
-}
-
-// -----------------------------------------------------------------------------
-int iGetEnum(char const* sName, char* sElmt, char const** psStrList, int const* iList, int iSize) {
-    int i;
-    for (i = 0; i < iSize; i++) {
-        if (strcasecmp(sElmt, psStrList[i]) == 0) {
-            PDEBUG("Set %s=%s\n", sName, _strlwr(sElmt));
-            return iList[i];
-        }
-    }
-    vSyntaxErrorExit("Illegal %s: %s", sName, sElmt);
-    return -1;
-}
-
-// -----------------------------------------------------------------------------
-char const* sEnumToStr(int iElmt, int const* iList, char const** psStrList, int iSize) {
-    int i;
-
-    for (i = 0; i < iSize;) {
-        if (iElmt == iList[i]) {
-            return psStrList[i];
-        }
-        i++;
-    }
-    return sUnknownStr;
-}
-
-// -----------------------------------------------------------------------------
-char const* sModeToStr(eModes eMode) {
-    return sEnumToStr(eMode, iModeList, sModeList, SIZEOF_ILIST(iModeList));
-}
-
-// -----------------------------------------------------------------------------
-char const* sFunctionToStr(eFunctions eFunction) {
-    return sEnumToStr(eFunction, iFunctionList, sFunctionList, SIZEOF_ILIST(iFunctionList));
 }
 
 // -----------------------------------------------------------------------------
@@ -807,158 +534,6 @@ void vPrintIntList(int* iList, int iLen) {
             putchar(']');
         }
     }
-}
-
-// -----------------------------------------------------------------------------
-int* iGetIntList(char const* name, char const* sList, int* iLen) {
-    // 12,3,5:9,45
-
-    int* iList = NULL;
-    int i, iFirst = 0, iCount = 0;
-    bool bIsLast  = false;
-    char const* p = sList;
-    char* endptr;
-
-    PDEBUG("iGetIntList(%s)\n", sList);
-
-    // Comptage et vérification de la liste des entiers
-    while (*p) {
-        i = strtol(p, &endptr, 0);
-        if (endptr == p) {
-            vSyntaxErrorExit("Illegal %s value: %s", name, p);
-        }
-        p = endptr;
-        PDEBUG("Integer found: %d\n", i);
-
-        if (*p == ':') {
-            // i est le premier d'un plage first:last
-            if (bIsLast) {
-                // il ne peut pas y avoir 2 * ':' de suite !
-                vSyntaxErrorExit("Illegal %s delimiter: '%c'", name, *p);
-            }
-            PDEBUG("Is First\n");
-            iFirst  = i;
-            bIsLast = true;
-        } else if ((*p == ',') || (*p == 0)) {
-            if (bIsLast) {
-                int iRange, iLast;
-
-                // i est dernier d'une plage first:last
-                iLast  = MAX(iFirst, i);
-                iFirst = MIN(iFirst, i);
-                iRange = iLast - iFirst + 1;
-                PDEBUG("Is Last, add %d items\n", iRange);
-                iCount += iRange;
-                bIsLast = false;
-            } else {
-                iCount++;
-            }
-        } else {
-            vSyntaxErrorExit("Illegal %s delimiter: '%c'", name, *p);
-        }
-
-        if (*p) {
-            p++; // On passe le délimiteur
-        }
-        PDEBUG("iCount=%d\n", iCount);
-    }
-
-    if (iCount > 0) {
-        int iIndex = 0;
-
-        // Allocation
-        iList = calloc(iCount, sizeof(int));
-
-        // Affectation
-        p = sList;
-        while (*p) {
-            i = strtol(p, &endptr, 0);
-            p = endptr;
-
-            if (*p == ':') {
-                // i est le premier d'un plage first:last
-                iFirst  = i;
-                bIsLast = true;
-            } else if ((*p == ',') || (*p == 0)) {
-                if (bIsLast) {
-                    // i est dernier d'une plage first:last
-                    int iLast = MAX(iFirst, i);
-                    iFirst    = MIN(iFirst, i);
-
-                    for (i = iFirst; i <= iLast; i++) {
-                        iList[iIndex++] = i;
-                    }
-                    bIsLast = false;
-                } else {
-                    iList[iIndex++] = i;
-                }
-            }
-
-            if (*p) {
-                p++; // On passe le délimiteur
-            }
-        }
-#ifdef DEBUG
-        if (ctx.bIsVerbose) {
-            vPrintIntList(iList, iCount);
-            putchar('\n');
-        }
-#endif
-    }
-    *iLen = iCount;
-    return iList;
-}
-
-// -----------------------------------------------------------------------------
-int iGetInt(char const* name, char const* num, int base) {
-    char* endptr;
-
-    int i = strtol(num, &endptr, base);
-    if (endptr == num) {
-        vSyntaxErrorExit("Illegal %s value: %s", name, num);
-    }
-
-    PDEBUG("Set %s=%d\n", name, i);
-    return i;
-}
-
-// -----------------------------------------------------------------------------
-double dGetDouble(char const* name, char const* num) {
-    char* endptr;
-
-    double d = strtod(num, &endptr);
-    if (endptr == num) {
-        vSyntaxErrorExit("Illegal %s value: %s", name, num);
-    }
-
-    PDEBUG("Set %s=%g\n", name, d);
-    return d;
-}
-
-// -----------------------------------------------------------------------------
-float fSwapFloat(float f) {
-    float ret = f;
-
-    if (ctx.bIsBigEndian) {
-        uint16_t* in  = (uint16_t*)&f;
-        uint16_t* out = (uint16_t*)&ret;
-        out[0]        = in[1];
-        out[1]        = in[0];
-    }
-    return ret;
-}
-
-// -----------------------------------------------------------------------------
-int32_t lSwapLong(int32_t l) {
-    int32_t ret = l;
-
-    if (ctx.bIsBigEndian) {
-        uint16_t* in  = (uint16_t*)&l;
-        uint16_t* out = (uint16_t*)&ret;
-        out[0]        = in[1];
-        out[1]        = in[0];
-    }
-    return ret;
 }
 
 // -----------------------------------------------------------------------------
